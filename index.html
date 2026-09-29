@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nhận diện Real-time</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; background: #111; color: #eee;
+    font-family: -apple-system, system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh; padding: 12px; box-sizing: border-box;
+  }
+  h1 { font-size: 18px; margin: 8px 0; }
+  .wrap { position: relative; width: 100%; max-width: 480px; }
+  video, canvas {
+    width: 100%; border-radius: 12px; display: block;
+    border: 3px solid #333; box-sizing: border-box;
+    transition: border-color 0.15s ease;
+  }
+  video.scanning { border-color: #4ade80; }
+  canvas { display: none; }
+  .dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    background: #555; margin-right: 6px; vertical-align: middle;
+  }
+  .dot.scanning { background: #4ade80; animation: pulse 0.8s infinite ease-in-out; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+  .result {
+    margin-top: 14px; padding: 14px; border-radius: 12px;
+    background: #1e1e1e; width: 100%; max-width: 480px; box-sizing: border-box;
+  }
+  .label { font-size: 22px; font-weight: 700; color: #4ade80; }
+  .conf { font-size: 14px; color: #aaa; margin-top: 4px; }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 13px; }
+  .bar-bg { flex: 1; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
+  .bar-fg { height: 100%; background: #4ade80; }
+  .status { font-size: 13px; color: #888; margin-top: 8px; }
+  button {
+    margin-top: 12px; padding: 10px 18px; border-radius: 999px; border: none;
+    background: #4ade80; color: #111; font-weight: 600; font-size: 15px;
+  }
+</style>
+</head>
+<body>
+  <h1>Test nhận diện qua camera</h1>
+  <div class="wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+  </div>
+  <button id="toggle">Tạm dừng</button>
+  <div class="result">
+    <div id="label" class="label">—</div>
+    <div id="conf" class="conf"></div>
+    <div id="bars"></div>
+  </div>
+  <div class="status"><span id="dot" class="dot"></span><span id="status">Đang kết nối camera...</span></div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const labelEl = document.getElementById('label');
+const confEl = document.getElementById('conf');
+const barsEl = document.getElementById('bars');
+const statusEl = document.getElementById('status');
+const dotEl = document.getElementById('dot');
+const toggleBtn = document.getElementById('toggle');
+
+let running = true;
+let busy = false;
+const INTERVAL_MS = 1000; // gửi 1 ảnh mỗi giây, tăng/giảm số này để đổi tốc độ
+
+toggleBtn.onclick = () => {
+  running = !running;
+  toggleBtn.textContent = running ? 'Tạm dừng' : 'Tiếp tục';
+};
+
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' }, audio: false
+    });
+    video.srcObject = stream;
+    statusEl.textContent = 'Đã kết nối camera. Đang chạy...';
+  } catch (err) {
+    statusEl.textContent = 'Lỗi camera: ' + err.message + ' (cần mở qua https hoặc http://localhost khi test trên chính máy)';
+  }
+}
+
+function renderBars(all_probs) {
+  barsEl.innerHTML = '';
+  const entries = Object.entries(all_probs).sort((a, b) => b[1] - a[1]);
+  for (const [cls, p] of entries) {
+    const row = document.createElement('div');
+    row.className = 'bar-row';
+    row.innerHTML = `<span style="width:80px">${cls}</span>
+      <div class="bar-bg"><div class="bar-fg" style="width:${(p*100).toFixed(0)}%"></div></div>
+      <span>${(p*100).toFixed(0)}%</span>`;
+    barsEl.appendChild(row);
+  }
+}
+
+async function captureAndSend() {
+  if (!running || busy || video.videoWidth === 0) return;
+  busy = true;
+  video.classList.add('scanning');
+  dotEl.classList.add('scanning');
+  statusEl.textContent = 'Đang quét...';
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0);
+
+  canvas.toBlob(async (blob) => {
+    try {
+      const form = new FormData();
+      form.append('file', blob, 'frame.jpg');
+      const res = await fetch('/predict', { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.error) {
+        statusEl.textContent = 'Lỗi: ' + data.error;
+      } else {
+        labelEl.textContent = data.label;
+        confEl.textContent = 'Độ tin cậy: ' + (data.confidence * 100).toFixed(1) + '%';
+        renderBars(data.all_probs);
+        statusEl.textContent = 'Đã quét xong, chờ lần tiếp theo...';
+      }
+    } catch (e) {
+      statusEl.textContent = 'Không gọi được server: ' + e.message;
+    }
+    video.classList.remove('scanning');
+    dotEl.classList.remove('scanning');
+    busy = false;
+  }, 'image/jpeg', 0.85);
+}
+
+startCamera();
+setInterval(captureAndSend, INTERVAL_MS);
+</script>
+</body>
+</html>
